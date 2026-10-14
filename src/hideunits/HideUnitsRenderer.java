@@ -6,6 +6,7 @@ import arc.graphics.g2d.*;
 import arc.graphics.gl.*;
 import arc.math.geom.*;
 import arc.struct.*;
+import mindustry.entities.abilities.*;
 import mindustry.game.EventType.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
@@ -28,11 +29,18 @@ public class HideUnitsRenderer{
 
     /** Units removed from the draw group this frame. */
     private final Seq<Unit> faded = new Seq<>();
+    /** Quasar forcefields are drawn separately at their normal shield layer. */
+    private final Seq<Unit> quasarUnits = new Seq<>();
+    private final Seq<ForceFieldAbility> quasarShields = new Seq<>();
     /** Anchor points active this frame; more than one in "all" mode. */
     private final Seq<Vec2> anchors = new Seq<>();
     private final Vec2 playerAnchor = new Vec2(), cursorAnchor = new Vec2(), cameraAnchor = new Vec2();
+    private final IntSeq suppressedIndices = new IntSeq();
+    private final Seq<Ability> suppressedAbilities = new Seq<>();
+    private final Ability noDrawAbility = new Ability(){};
 
     private FrameBuffer buffer;
+    private FrameBuffer shieldBuffer;
     private AlphaShader shader;
 
     public HideUnitsRenderer(){
@@ -43,6 +51,8 @@ public class HideUnitsRenderer{
     void draw(){
         //if the previous frame ended abnormally and postDraw never ran, put units back now
         restore();
+        quasarUnits.clear();
+        quasarShields.clear();
 
         if(!HideUnitsSettings.enabled() || !state.isGame()) return;
 
@@ -61,11 +71,26 @@ public class HideUnitsRenderer{
         if(faded.isEmpty()) return;
 
         for(Unit unit : faded){
+            if(unit.type.name.equals("quasar")){
+                for(Ability ability : unit.abilities){
+                    if(ability instanceof ForceFieldAbility shield){
+                        quasarUnits.add(unit);
+                        quasarShields.add(shield);
+                    }
+                }
+            }
+        }
+
+        for(Unit unit : faded){
             Groups.draw.remove(unit);
         }
 
         float opacity = HideUnitsSettings.opacity();
         if(opacity <= 0.001f) return;
+
+        if(!quasarShields.isEmpty()){
+            Draw.draw(Layer.shields, () -> drawQuasarShields(opacity));
+        }
 
         if(buffer == null){
             buffer = new FrameBuffer();
@@ -78,7 +103,7 @@ public class HideUnitsRenderer{
             buffer.begin(Color.clear);
             Draw.reset();
             for(Unit unit : faded){
-                unit.draw();
+                drawUnitWithoutQuasarShield(unit);
             }
             Draw.reset();
             buffer.end();
@@ -87,6 +112,70 @@ public class HideUnitsRenderer{
             buffer.blit(shader);
         });
         Draw.z(prevZ);
+    }
+
+    private void drawUnitWithoutQuasarShield(Unit unit){
+        if(!unit.type.name.equals("quasar")){
+            unit.draw();
+            return;
+        }
+
+        Ability[] abilities = unit.abilities;
+        suppressedIndices.clear();
+        suppressedAbilities.clear();
+
+        for(int i = 0; i < abilities.length; i++){
+            if(abilities[i] instanceof ForceFieldAbility){
+                suppressedIndices.add(i);
+                suppressedAbilities.add(abilities[i]);
+                abilities[i] = noDrawAbility;
+            }
+        }
+
+        try{
+            unit.draw();
+        }finally{
+            for(int i = 0; i < suppressedIndices.size; i++){
+                abilities[suppressedIndices.get(i)] = suppressedAbilities.get(i);
+            }
+            suppressedIndices.clear();
+            suppressedAbilities.clear();
+        }
+    }
+
+    private void drawQuasarShields(float opacity){
+        if(opacity >= 0.999f){
+            drawQuasarShields();
+            return;
+        }
+
+        if(shieldBuffer == null){
+            shieldBuffer = new FrameBuffer();
+        }
+        shieldBuffer.resize(graphics.getWidth(), graphics.getHeight());
+        shieldBuffer.begin(Color.clear);
+        Draw.reset();
+        drawQuasarShields();
+        Draw.reset();
+        shieldBuffer.end();
+
+        float prevZ = Draw.z();
+        shader.alpha = opacity;
+        shader.unpremultiply = true;
+        try{
+            shieldBuffer.blit(shader);
+        }finally{
+            shader.unpremultiply = false;
+            Draw.z(prevZ);
+        }
+    }
+
+    private void drawQuasarShields(){
+        for(int i = 0; i < quasarShields.size; i++){
+            Draw.reset();
+            quasarShields.get(i).draw(quasarUnits.get(i));
+        }
+        Draw.reset();
     }
 
     void restore(){
@@ -129,6 +218,7 @@ public class HideUnitsRenderer{
     /** Draws a fullscreen buffer multiplied by a constant alpha. */
     static class AlphaShader extends Shader{
         public float alpha = 1f;
+        public boolean unpremultiply;
 
         AlphaShader(){
             super("""
@@ -144,12 +234,14 @@ public class HideUnitsRenderer{
             """, """
             uniform sampler2D u_texture;
             uniform float u_alpha;
+            uniform float u_unpremultiply;
 
             varying vec2 v_texCoords;
 
             void main(){
                 vec4 color = texture2D(u_texture, v_texCoords);
-                gl_FragColor = vec4(color.rgb, color.a * u_alpha);
+                vec3 rgb = u_unpremultiply > 0.5 ? color.rgb / max(color.a, 0.0001) : color.rgb;
+                gl_FragColor = vec4(rgb, color.a * u_alpha);
             }
             """);
         }
@@ -157,6 +249,7 @@ public class HideUnitsRenderer{
         @Override
         public void apply(){
             setUniformf("u_alpha", alpha);
+            setUniformf("u_unpremultiply", unpremultiply ? 1f : 0f);
         }
     }
 }

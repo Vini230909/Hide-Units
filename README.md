@@ -60,7 +60,8 @@ Requires Mindustry **build 158 or newer**.
 
 A few honest quirks with the ghost (non-zero opacity) mode:
 - Faded units all draw at one layer, so a ghosted ground unit may appear on top of effects that would normally cover it.
-- Shield bubbles on faded units render as plain shapes instead of the fancy animated shield.
+- Quasar forcefields keep their normal shield-layer rendering and fade independently with the unit.
+- Ordinary hit shields on faded units render as plain shapes.
 - Player name tags stay visible even when that player's unit is faded — the tag belongs to the player, not the unit.
 
 Set opacity to 0% and none of that applies: the units are just gone.
